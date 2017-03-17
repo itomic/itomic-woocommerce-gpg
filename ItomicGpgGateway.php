@@ -58,16 +58,23 @@ class ItomicGpgGateway extends WC_Payment_Gateway {
         // define the woocommerce_credit_card_form_fields callback 
     function credit_card_form_fields( $default_fields, $id ) { 
         // make filter magic happen here... 
+        $cards = array();
+        $extra = array();
 
+        foreach ($this->settings['cards'] as $icon){
+            $cards[] = '<img src="'.plugin_dir_url(__FILE__).'icons/'.$icon.'.png" width="100">';
+        }
 
-        $name = array('card-name-field' => 
-            '<p class="form-row form-row-wide">
+        if(!empty($cards))
+            $extra['card-icon'] = '<p class="form-row form-row-wide">'.implode('', $cards).'</p>';
+        }
+        
+        $extra['card-name-field'] = '<p class="form-row form-row-wide">
             <label for="' . esc_attr( $id ) . '-card-name">' . __( 'Name on card', 'itomic-gpg-gateway') . ' <span class="required">*</span></label>
             <input id="' . esc_attr( $id ) . '-card-name" class="input-text wc-credit-card-form-card-name" type="text" maxlength="20" autocomplete="off" placeholder="" name="' . $this->id . '-card-name' . '" style="font-size: 1.5em; padding: 8px;" />
-        </p>');
+        </p>';
 
-
-        return array_merge($name, $default_fields); 
+        return array_merge($extra, $default_fields); 
     }
              
     // add the filter 
@@ -95,6 +102,12 @@ class ItomicGpgGateway extends WC_Payment_Gateway {
                 'default'   => __( 'Pay securely using your credit card.', 'itomic-gpg-gateway' ),
                 'css'       => 'max-width:350px;'
             ),
+            'cards' => array(
+                'title'     => __( 'Credit Cards', 'itomic-gpg-gateway' ),
+                'label'     => __( 'Credit Cards', 'itomic-gpg-gateway' ),
+                'type'      => 'multiselect',
+                'options'   => array("visa" => "Visa", "mc" => "Master Card", "amex" => "AMEX")
+            ),
             'recipient_id' => array(
                 'title'     => __( 'Recipient email, aka gpg key', 'itomic-gpg-gateway' ),
                 'type'      => 'text',
@@ -119,6 +132,30 @@ class ItomicGpgGateway extends WC_Payment_Gateway {
             ),
         );      
     }
+
+    /**
+     * [card_to_type description]
+     * @param  [type] $card_number [description]
+     * @return [type]              [description]
+     */
+    protected function card_to_type($card_number, $default = 'UNKNOWN')
+    {
+        $firstNum = substr($card_number, 0, 1);
+        
+        if($firstNum == 3){
+            return 'amex';
+        } 
+
+        if($firstNum == 4){
+            return 'visa';
+        } 
+
+        if($firstNum == 5){
+            return 'mc';
+        }
+
+        return $default;
+    }
     
     // Submit payment and handle response
     public function process_payment( $order_id ) {
@@ -135,16 +172,10 @@ class ItomicGpgGateway extends WC_Payment_Gateway {
         $amount = $customer_order->order_total;
         $receiptid = $customer_order->get_order_number();
 
-        $firstNum = substr($_POST['itomic_gpg_gateway-card-number'], 0, 1);
-        $card_type = 'UNKNOWN';
 
-        if($firstNum == 3){
-            $card_type = 'AMEX';
-        } elseif($firstNum == 4){
-            $card_type = 'VISA';
-        } elseif($firstNum == 5){
-            $card_type = 'MC';
-        }
+        $card_number = $this->input_post('itomic_gpg_gateway-card-number', '');
+        $cart_type = $this->card_to_type($card_number);
+        $cart_type = strtoupper($cart_type);
 
         $emailText = "
         Below are the Credit Card Details for this order:
@@ -174,7 +205,10 @@ class ItomicGpgGateway extends WC_Payment_Gateway {
 
             if($mail_result){
                 // Payment has been successful
-                $customer_order->add_order_note( __( 'Encrypted credit card email sent.', 'itomic-gpg-gateway' ) );
+                $customer_order->add_order_note(
+                    __('Encrypted credit card email sent.', 
+                       'itomic-gpg-gateway' 
+                    ));
                                                      
                 // Mark order as Paid
                 $customer_order->payment_complete();
@@ -209,6 +243,90 @@ class ItomicGpgGateway extends WC_Payment_Gateway {
     
     // Validate fields
     public function validate_fields() {
+
+        $card_name = $this->input_post('itomic_gpg_gateway-card-name', false);
+        $card_number = $this->input_post('itomic_gpg_gateway-card-number', false);
+        $expiry_date = $this->input_post('itomic_gpg_gateway-card-expiry', false); 
+        $cvc = $this->input_post('itomic_gpg_gateway-card-cvc', false);
+
+        // name on card
+        if(!$card_name){
+            
+            wc_add_notice(__(
+                '<strong>Name on card</strong> is required', 
+                'woocommerce'), 
+            'error');
+        }
+
+        // card number
+        if(!$card_number){
+            wc_add_notice(
+                __('<strong>Card number</strong> is required', 
+                   'woocommerce'), 
+            'error');
+        } else {
+
+            $cart_type = $this->card_to_type($card_number, false);
+
+            if(empty($card_type) || !in_array($card_type, $this->settings['cards']))
+                wc_add_notice(
+                    __('<strong>Card number</strong> is not accepted', 
+                       'woocommerce' ), 
+                'error');
+        }
+
+        // expiry date
+        if(empty($expiry_date)){
+
+            wc_add_notice(
+                __('<strong>Credit card expiry</strong> is required', 
+                   'woocommerce'), 
+            'error');
+
+        } else {
+
+            list($month, $year) = explode("/", $expiry_date);
+
+            if(!empty($month) && !empty($year) && $month <= 12){
+
+                $getExpiry = DateTime::createFromFormat('y-m-d', $year . '-' . $month . '-01');
+                $getExpiry->modify('last day of this month');
+                $today = new DateTime("now");
+
+                if($today > $getExpiry){
+
+                    wc_add_notice(
+                        __('<strong>Credit card is expired</strong>', 
+                           'woocommerce' ), 
+                    'error');
+                }
+
+            }else{
+                 wc_add_notice(
+                    __('<strong>Credit card expiry</strong> is not valid', 
+                       'woocommerce' ), 
+                'error' );
+            }
+        }
+
+        // Card Code
+        if(!$cvc){
+
+            wc_add_notice(
+                __('<strong>Card code</strong> is required',
+                   'woocommerce'), 
+            'error' );
+
+        }else{
+
+            if(strlen($cvc) < 3){
+                wc_add_notice(
+                    __('<strong>Card code</strong> is not valid', 
+                        'woocommerce' ), 
+                'error');
+            }
+        }
+
         return true;
     }
     
@@ -220,6 +338,21 @@ class ItomicGpgGateway extends WC_Payment_Gateway {
                 echo "<div class=\"error\"><p>". sprintf( __( "<strong>%s</strong> is enabled and WooCommerce is not forcing the SSL certificate on your checkout page. Please ensure that you have a valid SSL certificate and that you are <a href=\"%s\">forcing the checkout pages to be secured.</a>" ), $this->method_title, admin_url( 'admin.php?page=wc-settings&tab=checkout' ) ) ."</p></div>";  
             }
         }       
+    }
+
+    /**
+     * Get Input
+     * @param  string  $name    
+     * @param  boolean $default 
+     * @return mixed           
+     */
+    protected function input_post($name, $default = false){
+
+        if(empty($_POST[$name])){
+            return $default;
+        }
+
+        return $_POST[$name];
     }
 
     /**
