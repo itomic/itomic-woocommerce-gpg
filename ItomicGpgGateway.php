@@ -65,7 +65,7 @@ class ItomicGpgGateway extends WC_Payment_Gateway {
             $cards[] = '<img src="'.plugin_dir_url(__FILE__).'icons/'.$icon.'.png" width="100">';
         }
 
-        if(!empty($cards))
+        if(!empty($cards)){
             $extra['card-icon'] = '<p class="form-row form-row-wide">'.implode('', $cards).'</p>';
         }
         
